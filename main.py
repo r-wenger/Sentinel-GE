@@ -163,6 +163,10 @@ def main():
                                      output_filename)
     print(datetime.datetime.now().isoformat() + ' Successfully rasterized ground reference for each S2 tiles.')
 
+    print(datetime.datetime.now().isoformat() + ' Downloading and calibrating Sentinel-1 data.')
+
+    print(datetime.datetime.now().isoformat() + ' Successfully downloaded and calibrated Sentinel-1 data.')
+
     print(datetime.datetime.now().isoformat() + ' Calculating patches for each tile.')
     if not os.path.exists(directory_dataset):
         os.mkdir(directory_dataset)
