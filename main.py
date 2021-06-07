@@ -12,7 +12,7 @@ import random
 import time
 import os, shutil, sys
 import zipfile
-import datetime
+from datetime import datetime, timedelta
 import fileinput
 
 def rasterize_ground_ref(path_raster_reference, path_shapefile_to_raster, attribute_shapefile, output_filename):
@@ -164,7 +164,28 @@ def main():
     print(datetime.datetime.now().isoformat() + ' Successfully rasterized ground reference for each S2 tiles.')
 
     print(datetime.datetime.now().isoformat() + ' Downloading and calibrating Sentinel-1 data.')
+    s1_tiles = ''
+    s1_first_date = ''
+    s1_last_date = ''
+    s1_output = './s1_output'
+    for tile in tiles_list:
+        s1_tiles += str(tile) + ' '
 
+    for img in os.listdir(directory_images):
+        _date = get_date_from_image_path(img)
+        datetime_object = datetime.strptime(_date, '%Y-%m-%d')
+        s1_first_date = (datetime_object - timedelta(days=4)).strftime('%Y-%m-%d')
+        s1_last_date = (datetime_object + timedelta(days=4)).strftime('%Y-%m-%d')
+
+    with fileinput.FileInput('./sentinel_1_tiling/S1Processor.cfg', inplace=True, backup='.bak') as file:
+        for line in file:
+            line.replace('{output_path}', s1_output)
+            line.replace('{first_date}', s1_first_date)
+            line.replace('{last_date}', s1_last_date)
+            line.replace('{tiles}', s1_tiles)
+
+    command = 'python ./sentinel_1_tiling/S1Processor.py ./sentinel_1_tiling/S1Processor.cfg'
+    os.system(command)
     print(datetime.datetime.now().isoformat() + ' Successfully downloaded and calibrated Sentinel-1 data.')
 
     print(datetime.datetime.now().isoformat() + ' Calculating patches for each tile.')
