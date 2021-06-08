@@ -15,6 +15,7 @@ import zipfile
 from datetime import datetime, timedelta
 import fileinput
 
+
 def rasterize_ground_ref(path_raster_reference, path_shapefile_to_raster, attribute_shapefile, output_filename):
     """
     Rasterizing ground truth.
@@ -74,7 +75,7 @@ def get_sentinel_tiles(path_shapefile_sentinel, field):
     return res
 
 
-def download_sentinel(tile, start_date, end_date):
+def download_sentinel2(tile, start_date, end_date):
     """
     Download every Sentinel-2 L2A images between two dates.
     @params:
@@ -83,7 +84,41 @@ def download_sentinel(tile, start_date, end_date):
         end_date                    - Required  : end date
     """
     command = "python ./sentinel_download/theia_download.py -t T" + str(tile) + " -c SENTINEL2 -a ./sentinel_download/config_theia.cfg + -d " + str(start_date) + " -f " + str(end_date) + " -m 10"
-    #os.system(command)
+    os.system(command)
+
+
+def download_sentinel1(tiles_list, directory_images, step=4):
+    """
+    Download every Sentinel-2 L2A images between two dates.
+    @params:
+        tiles_list   	        - Required  : list of Sentinel-2 tiles
+        directory_images        - Required  : directory containing Sentinel-2 images
+        step                    - Optional  : day interval between Sentinel-2 image to download Sentinel-1 images
+    """
+    s1_output = './S1_img'
+    for tile in tiles_list:
+        s1_tile = tile
+
+        for img in os.listdir(directory_images):
+            if s1_tile in img:
+                _date = get_date_from_image_path(img)
+                datetime_object = datetime.strptime(_date, '%Y%m%d')
+                s1_first_date = (datetime_object - timedelta(days=int(step))).strftime('%Y-%m-%d')
+                s1_last_date = (datetime_object + timedelta(days=int(step))).strftime('%Y-%m-%d')
+
+                replacements = {'{output_path}': s1_output, '{first_date}': s1_first_date, '{last_date}': s1_last_date,
+                                '{tiles}': s1_tile}
+
+                with open('./sentinel_1_tiling/S1Processor.cfg') as infile, open(
+                        './sentinel_1_tiling/S1Processor_tmp.cfg', 'w') as outfile:
+                    for line in infile:
+                        for src, target in replacements.iteritems():
+                            line = line.replace(src, target)
+                        outfile.write(line)
+
+                command = 'python ./sentinel_1_tiling/S1Processor.py ./sentinel_1_tiling/S1Processor_tmp.cfg'
+                os.system(command)
+                os.system('rm ./sentinel_1_tiling/S1Processor_tmp.cfg')
 
 
 def unzip(path_to_zip_file, directory_to_extract_to):
@@ -101,7 +136,7 @@ def unzip(path_to_zip_file, directory_to_extract_to):
     command_del = 'rm ' + str(path_to_zip_file)
     os.system(command_del)
 
-    print(datetime.datetime.now().isoformat() + 'Successfully extracted ' + str(path_to_zip_file))
+    print(datetime.now().isoformat() + 'Successfully extracted ' + str(path_to_zip_file))
 
 
 def get_date_from_image_path(name):
@@ -134,23 +169,24 @@ def main():
 
     #Download Sentinel for each tile
     start_date = '2018-07-01'
-    end_date = '2018-07-30'
+    end_date = '2018-07-04'
 
-    print(datetime.datetime.now().isoformat() + ' Downloading S2 images from ' + str(
+    print(datetime.now().isoformat() + ' Downloading S2 images from ' + str(
         start_date) + ' to ' + str(end_date) + ' for each S2 tiles.')
     for tile in tiles_list:
-        download_sentinel(tile, start_date, end_date)
-    print(datetime.datetime.now().isoformat() + ' Successfully downloaded S2 images from ' + str(
+        print('')
+        #download_sentinel2(tile, start_date, end_date)
+    print(datetime.now().isoformat() + ' Successfully downloaded S2 images from ' + str(
         start_date) + ' to ' + str(end_date) + '.')
 
-    print(datetime.datetime.now().isoformat() + ' Unzipping S2 images downloaded.')
+    print(datetime.now().isoformat() + ' Unzipping S2 images downloaded.')
     for file in os.listdir(cwd):
         file_path = os.path.join(cwd, file)
         if zipfile.is_zipfile(file_path):
             unzip(file_path, directory_images)
-    print(datetime.datetime.now().isoformat() + ' Successfully unzipped S2 images.')
+    print(datetime.now().isoformat() + ' Successfully unzipped S2 images.')
 
-    print(datetime.datetime.now().isoformat() + ' Rasterizing ground reference for each S2 tiles.')
+    print(datetime.now().isoformat() + ' Rasterizing ground reference for each S2 tiles.')
     if not os.path.exists(directory_ground_reference_raster):
         os.mkdir(directory_ground_reference_raster)
 
@@ -159,46 +195,24 @@ def main():
             if tile in img:
                 path_band_ref = os.path.join(directory_images, img, img + '_SRE_B3.tif')
                 output_filename = os.path.join(cwd, directory_ground_reference_raster, tile + '_ground_reference.tif')
-                rasterize_ground_ref(path_band_ref, path_shp_ground_reference, attribute_shp_ground_reference,
-                                     output_filename)
-    print(datetime.datetime.now().isoformat() + ' Successfully rasterized ground reference for each S2 tiles.')
+                #rasterize_ground_ref(path_band_ref, path_shp_ground_reference, attribute_shp_ground_reference, output_filename)
+    print(datetime.now().isoformat() + ' Successfully rasterized ground reference for each S2 tiles.')
 
-    print(datetime.datetime.now().isoformat() + ' Downloading and calibrating Sentinel-1 data.')
-    s1_tiles = ''
-    s1_first_date = ''
-    s1_last_date = ''
-    s1_output = './s1_output'
-    for tile in tiles_list:
-        s1_tiles += str(tile) + ' '
+    print(datetime.now().isoformat() + ' Downloading and calibrating Sentinel-1 data.')
+    download_sentinel1(tiles_list, directory_images, step=4)
+    print(datetime.now().isoformat() + ' Successfully downloaded and calibrated Sentinel-1 data.')
 
-    for img in os.listdir(directory_images):
-        _date = get_date_from_image_path(img)
-        datetime_object = datetime.strptime(_date, '%Y-%m-%d')
-        s1_first_date = (datetime_object - timedelta(days=4)).strftime('%Y-%m-%d')
-        s1_last_date = (datetime_object + timedelta(days=4)).strftime('%Y-%m-%d')
-
-    with fileinput.FileInput('./sentinel_1_tiling/S1Processor.cfg', inplace=True, backup='.bak') as file:
-        for line in file:
-            line.replace('{output_path}', s1_output)
-            line.replace('{first_date}', s1_first_date)
-            line.replace('{last_date}', s1_last_date)
-            line.replace('{tiles}', s1_tiles)
-
-    command = 'python ./sentinel_1_tiling/S1Processor.py ./sentinel_1_tiling/S1Processor.cfg'
-    os.system(command)
-    print(datetime.datetime.now().isoformat() + ' Successfully downloaded and calibrated Sentinel-1 data.')
-
-    print(datetime.datetime.now().isoformat() + ' Calculating patches for each tile.')
+    print(datetime.now().isoformat() + ' Calculating patches for each tile.')
     if not os.path.exists(directory_dataset):
         os.mkdir(directory_dataset)
 
     for tile in tiles_list:
         calculate_patches_tile(tile, directory_ground_reference_raster, directory_images, directory_dataset)
-    print(datetime.datetime.now().isoformat() + ' Successfully calculated patches for each tile.')
+    print(datetime.now().isoformat() + ' Successfully calculated patches for each tile.')
 
-    print(datetime.datetime.now().isoformat() + ' Checking overlapped patches.')
+    print(datetime.now().isoformat() + ' Checking overlapped patches.')
 
-    print(datetime.datetime.now().isoformat() + ' Successfully checked and deleted overlapped patches')
+    print(datetime.now().isoformat() + ' Successfully checked and deleted overlapped patches')
 
 
 if __name__ == '__main__':
