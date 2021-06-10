@@ -13,6 +13,7 @@ import time
 import os, shutil, sys
 import zipfile
 from datetime import datetime, timedelta
+import json
 import fileinput
 
 
@@ -121,6 +122,43 @@ def download_sentinel1(tiles_list, directory_images, step=4):
                 os.system('rm ./sentinel_1_tiling/S1Processor_tmp.cfg')
 
 
+def check_satellite_data(tiles, directory_s2, directory_s1, step=4, filtered=True):
+    """
+    Construct JSON file to create database of S1 and S2 images.
+    @params:
+        tiles   	        - Required  : list of Sentinel-2 tiles
+        directory_s2        - Required  : directory containing Sentinel-2 images
+        directory_s1        - Required  : directory containing Sentinel-1 images pretreated from s1tiling
+        step                - Optional  : day interval between Sentinel-2 image to download Sentinel-1 images
+        filtered            - Optional  : using or not filtered images
+    """
+    data = {}
+
+    for tile in tiles:
+        data[tile] = []
+        for img_s2 in os.listdir(directory_s2):
+            if tile in img_s2:
+                date = get_date_from_image_path(img_s2)
+                s1_path = get_s1_from_s2_tile(tile, date, directory_s1, step=step, filtered=filtered)
+                data[tile].append({
+                    'dateS2': date,
+                    's2_path': os.path.join(directory_s2, img_s2),
+                    's1_path': s1_path
+                })
+
+    if os.path.exists('./sentinel_data.json'):
+        os.remove('./sentinel_data.json')
+
+    with open('./sentinel_data.json', 'w') as file:
+        json.dump(data, file)
+
+    return data
+
+
+def get_s1_from_s2_tile(tile, date, directory_s1, step=4, filtered=True):
+    return 0
+
+
 def unzip(path_to_zip_file, directory_to_extract_to):
     """
     Unzip a file to a precise directory and remove it after process.
@@ -168,8 +206,8 @@ def main():
     tiles_list = get_sentinel_tiles(path_shapefile_sentinel, field)
 
     #Download Sentinel for each tile
-    start_date = '2018-07-01'
-    end_date = '2018-07-04'
+    start_date = '2020-07-15'
+    end_date = '2020-07-30'
 
     print(datetime.now().isoformat() + ' Downloading S2 images from ' + str(
         start_date) + ' to ' + str(end_date) + ' for each S2 tiles.')
