@@ -1,20 +1,16 @@
 import osgeo.gdal as gdal
 import osgeo.ogr as ogr
-import osgeo.osr as osr
 from osgeo.gdalconst import *
 
 # Numpy Import
 import numpy as np
-import numpy.ma as ma
 
 # Others imports
-import random
-import time
-import os, shutil, sys
+import os
 import zipfile
 from datetime import datetime, timedelta
 import json
-import fileinput
+import tifffile as tiff
 
 
 def rasterize_ground_ref(path_raster_reference, path_shapefile_to_raster, attribute_shapefile, output_filename):
@@ -88,7 +84,7 @@ def download_sentinel2(tile, start_date, end_date):
     os.system(command)
 
 
-def download_sentinel1(tiles_list, directory_images, step=4):
+def download_sentinel1(tiles_list, directory_images, step=8):
     """
     Download every Sentinel-2 L2A images between two dates.
     @params:
@@ -122,7 +118,7 @@ def download_sentinel1(tiles_list, directory_images, step=4):
                 os.system('rm ./sentinel_1_tiling/S1Processor_tmp.cfg')
 
 
-def check_satellite_data(tiles, directory_s2, directory_s1, step=4, filtered=True):
+def check_satellite_data(tiles, directory_s2, directory_s1, step=8, filtered=True):
     """
     Construct JSON file to create database of S1 and S2 images.
     @params:
@@ -139,11 +135,13 @@ def check_satellite_data(tiles, directory_s2, directory_s1, step=4, filtered=Tru
         for img_s2 in os.listdir(directory_s2):
             if tile in img_s2:
                 date = get_date_from_image_path(img_s2)
-                s1_path = get_s1_from_s2_tile(tile, date, directory_s1, step=step, filtered=filtered)
+                s1_path_vv = get_s1_from_s2_tile(tile, date, directory_s1, 'vv', step=step, filtered=filtered)
+                s1_path_vh = get_s1_from_s2_tile(tile, date, directory_s1, 'vh', step=step, filtered=filtered)
                 data[tile].append({
                     'dateS2': date,
                     's2_path': os.path.join(directory_s2, img_s2),
-                    's1_path': s1_path
+                    's1_path_vv': s1_path_vv,
+                    's1_path_vh': s1_path_vh
                 })
 
     if os.path.exists('./sentinel_data.json'):
@@ -155,8 +153,43 @@ def check_satellite_data(tiles, directory_s2, directory_s1, step=4, filtered=Tru
     return data
 
 
-def get_s1_from_s2_tile(tile, date, directory_s1, step=4, filtered=True):
-    return 0
+def get_s1_from_s2_tile(tile, date_s2, directory_s1, pol, step=8, filtered=True):
+    """
+    Extract filename of the Sentinel-1 image
+    @params:
+        tile   	            - Required  : current tile
+        date_s2             - Required  : date of current Sentinel-2
+        directory_s1        - Required  : directory containing Sentinel-1 images pretreated from s1tiling
+        step                - Optional  : day interval between Sentinel-2 image to download Sentinel-1 images
+        filtered            - Optional  : using or not filtered images
+    """
+    path_folder = os.path.join(directory_s1, str(tile))
+    if filtered:
+        path_folder = os.path.join(directory_s1, str(tile), 'filtered')
+
+    s1_files = []
+    datetime_s2 = datetime.strptime(date_s2, '%Y%m%d')
+    s1_first_date = datetime_s2 - timedelta(days=int(step))
+    s1_last_date = datetime_s2 + timedelta(days=int(step))
+
+    for file in os.listdir(path_folder):
+        if (tile in file) and (pol in file):
+            datetime_current_s1 = datetime.strptime(get_date_from_image_path(file, s1=True), '%Y%m%d')
+            if s1_first_date <= datetime_current_s1 <= s1_last_date:
+                s1_files.append(file)
+
+    _size = None
+    res_img = None
+    for file in s1_files:
+        _img = tiff.imread(os.path.join(path_folder, file))
+        if _size is None:
+            _size = np.count_nonzero(_img == 0)
+            res_img = file
+        else:
+            if np.count_nonzero(_img == 0) < _size:
+                res_img = file
+
+    return os.path.join(path_folder, res_img)
 
 
 def unzip(path_to_zip_file, directory_to_extract_to):
@@ -177,13 +210,17 @@ def unzip(path_to_zip_file, directory_to_extract_to):
     print(datetime.now().isoformat() + 'Successfully extracted ' + str(path_to_zip_file))
 
 
-def get_date_from_image_path(name):
+def get_date_from_image_path(name, s1=False):
     """
-    Return date from Sentinel-2 folder name.
+    Return date from Sentinel-2 folder name or Sentinel-1 pretreated name.
     @params:
         path   	                    - Required  : Folder name containing every image bands.
+        s1   	                    - Optional  : True if name is Sentinel-1 filename
     """
-    date = name.split('_')[1].split('-')[0]
+    if s1:
+        date = name.split('_')[5][0:8]
+    else:
+        date = name.split('_')[1].split('-')[0]
 
     return date
 
@@ -206,8 +243,8 @@ def main():
     tiles_list = get_sentinel_tiles(path_shapefile_sentinel, field)
 
     #Download Sentinel for each tile
-    start_date = '2020-07-15'
-    end_date = '2020-07-30'
+    start_date = '2020-06-15'
+    end_date = '2020-06-30'
 
     print(datetime.now().isoformat() + ' Downloading S2 images from ' + str(
         start_date) + ' to ' + str(end_date) + ' for each S2 tiles.')
@@ -237,8 +274,13 @@ def main():
     print(datetime.now().isoformat() + ' Successfully rasterized ground reference for each S2 tiles.')
 
     print(datetime.now().isoformat() + ' Downloading and calibrating Sentinel-1 data.')
-    download_sentinel1(tiles_list, directory_images, step=4)
+    download_sentinel1(tiles_list, directory_images, step=8)
     print(datetime.now().isoformat() + ' Successfully downloaded and calibrated Sentinel-1 data.')
+
+    print(datetime.now().isoformat() + ' Checking Sentinel-1 data.')
+    s1_output = './S1_img'
+    json = check_satellite_data(tiles_list, directory_images, s1_output)
+    print(datetime.now().isoformat() + ' Successfully checked Sentinel-1 data.')
 
     print(datetime.now().isoformat() + ' Calculating patches for each tile.')
     if not os.path.exists(directory_dataset):
