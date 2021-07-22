@@ -9,6 +9,7 @@ import numpy as np
 import os
 import zipfile
 from datetime import datetime, timedelta
+from scipy.ndimage import zoom
 import json
 import tifffile as tiff
 
@@ -80,7 +81,9 @@ def download_sentinel2(tile, start_date, end_date):
         start_date                  - Required  : start date
         end_date                    - Required  : end date
     """
-    command = "python ./sentinel_download/theia_download.py -t T" + str(tile) + " -c SENTINEL2 -a ./sentinel_download/config_theia.cfg + -d " + str(start_date) + " -f " + str(end_date) + " -m 10"
+    command = "python ./sentinel_download/theia_download.py -t T" + str(
+        tile) + " -c SENTINEL2 -a ./sentinel_download/config_theia.cfg + -d " + str(start_date) + " -f " + str(
+        end_date) + " -m 10"
     os.system(command)
 
 
@@ -225,32 +228,223 @@ def get_date_from_image_path(name, s1=False):
     return date
 
 
-def calculate_patches_tile(tile, directory_ground_reference, directory_sat_images, directory_dataset):
-    return 0
+def get_coordinates(dataset, x_index_topleft, y_index_topleft):
+    """
+    Get upper left coordinates using matrix cell number
+    @params:
+        dataset   		  - Required  : dataset raster
+        x_index_topleft   - Required  : x cell index
+        y_index_topleft   - Required  : y cell index
+    """
+    if dataset is not None:
+        (upper_left_x, x_size, x_rotation, upper_left_y, y_rotation, y_size) = dataset.GetGeoTransform()
+
+        x_coords_topleft = x_index_topleft * x_size + upper_left_x
+        y_coords_topleft = y_index_topleft * y_size + upper_left_y
+
+        return (x_coords_topleft, y_coords_topleft, x_size, y_size)
+    else:
+        raise Exception('Error : dataset is None')
+
+
+def resize_bands(dataser_raster):
+    gt = dataser_raster.GetGeoTransform()
+    res_x = int(gt[1])
+    res_y = int(abs(gt[-1]))
+
+    _res_band = None
+    if res_x != 10 or res_y != 10:
+        ratio = float(res_x / 10)
+        to_resample = dataser_raster.GetRasterBand(1).ReadAsArray()
+        _res_band = np.array(zoom(to_resample, ratio, order=0))
+    else:
+        _res_band = np.array(dataser_raster.GetRasterBand(1).ReadAsArray())
+
+    return _res_band
+
+
+def get_s1_dates(path):
+    res = []
+
+    assert len(os.listdir(path)) > 2
+
+    for img in os.listdir(path):
+        _c = img.split('_')[5][0:8]
+        if _c not in res:
+            res.append(_c)
+
+    return res
+
+
+# Nomenclature des patchs : tile_sensor_date_topX_topY_
+def calculate_patches_tile(tile, directory_ground_reference, directory_sat_images_s2, directory_sat_images_s1,
+                           directory_dataset, patch_size, method=1):
+    bands_S2 = ['B2.tif', 'B3.tif', 'B4.tif', 'B5.tif', 'B6.tif', 'B7.tif', 'B8.tif', 'B8A.tif', 'B11.tif', 'B12.tif']
+    polar_S1 = ['vv', 'vh']
+    path_gr = None
+
+    for gr in os.listdir(directory_ground_reference):
+        if tile in gr:
+            path_gr = os.path.join(directory_ground_reference, gr)
+
+    assert path_gr is not None
+
+    ds_gr_raster = gdal.Open(path_gr)
+    gr_raster = ds_gr_raster.GetRasterBand(1).ReadAsArray()
+
+    if method == 1:
+        step = patch_size
+    else:
+        step = 1
+
+    for y in range(0, gr_raster.shape[0], step):
+        for x in range(0, gr_raster.shape[1], step):
+            if method == 2:
+                step = 1
+
+            gr_patch = gr_raster[y:y + patch_size, x:x + patch_size]
+
+            if 255 not in gr_patch:
+                if method == 2:
+                    step = patch_size
+
+                x_coords_topleft, y_coords_topleft, x_size, y_size = get_coordinates(ds_gr_raster,
+                                                                                     x, y)
+                new_geotrans = (x_coords_topleft, x_size, 0, y_coords_topleft, 0, y_size)
+
+                driver = gdal.GetDriverByName("GTiff")
+
+                for img_dir in os.listdir(directory_sat_images_s2):
+                    if tile in img_dir:
+                        date_s2 = get_date_from_image_path(img_dir)
+                        output_patch_name_s2 = os.path.join(directory_dataset, str(tile) + '_' + str(date_s2) + '_S2_' +
+                                                            str(x) + '_' + str(y) + '.tif')
+                        output_patch_name_gr = os.path.join(directory_dataset, str(tile) + '_' + str(date_s2) + '_GR_' +
+                                                            str(x) + '_' + str(y) + '.tif')
+
+                        dst_ds_img_s2 = driver.Create(output_patch_name_s2, patch_size, patch_size, len(bands_S2),
+                                                      gdal.GDT_Float32, options=["COMPRESS=LZW"])
+
+                        dst_ds_mask = driver.Create(output_patch_name_gr, patch_size, patch_size, 1, gdal.GDT_UInt16,
+                                                    options=["COMPRESS=LZW"])
+
+                        dst_ds_img_s2.SetProjection(ds_gr_raster.GetProjection())
+                        dst_ds_mask.SetProjection(ds_gr_raster.GetProjection())
+
+                        dst_ds_img_s2.SetGeoTransform(new_geotrans)
+                        dst_ds_mask.SetGeoTransform(new_geotrans)
+
+                        dst_ds_mask.GetRasterBand(1).WriteArray(gr_patch)
+
+                        count_s2_bands = 1
+                        for band_name in bands_S2:
+                            for band in os.listdir(os.path.join(directory_sat_images_s2, img_dir)):
+                                if ('SRE' in band) and (band_name in band):
+                                    ds_band = gdal.Open(os.path.join(directory_sat_images_s2, img_dir, band))
+                                    patch_band = resize_bands(ds_band)[y:y + patch_size, x:x + patch_size]
+                                    dst_ds_img_s2.GetRasterBand(count_s2_bands).WriteArray(patch_band)
+                                    count_s2_bands += 1
+
+                for folder_tile in os.listdir(directory_sat_images_s1):
+                    if str(folder_tile) == str(tile):
+                        for year in os.listdir(os.path.join(directory_sat_images_s1, folder_tile)):
+                            for month in os.listdir(os.path.join(directory_sat_images_s1, folder_tile, year)):
+                                complete_dates_s1 = get_s1_dates(os.path.join(directory_sat_images_s1, folder_tile,
+                                                                              year, month))
+
+                                for date in complete_dates_s1:
+                                    count_s1_polar = 1
+                                    date_s1 = str(year) + str(month) + str(date[-2:])
+                                    output_patch_name_s1 = os.path.join(directory_dataset,
+                                                                        str(tile) + '_' + str(date_s1) + '_S1_' +
+                                                                        str(x) + '_' + str(y) + '.tif')
+                                    dst_ds_img_s1 = driver.Create(output_patch_name_s1, patch_size, patch_size,
+                                                                  len(polar_S1),
+                                                                  gdal.GDT_Float32, options=["COMPRESS=LZW"])
+                                    dst_ds_img_s1.SetProjection(ds_gr_raster.GetProjection())
+                                    dst_ds_img_s1.SetGeoTransform(new_geotrans)
+
+                                    for polar in polar_S1:
+                                        for img in os.listdir(
+                                                os.path.join(directory_sat_images_s1, folder_tile, year, month)):
+                                            if (polar in img) and (date in img):
+                                                path_radar = os.path.join(directory_sat_images_s1, folder_tile, year,
+                                                                          month, img)
+                                                ds_band = gdal.Open(path_radar)
+                                                patch_band = resize_bands(ds_band)[y:y + patch_size, x:x + patch_size]
+                                                dst_ds_img_s1.GetRasterBand(count_s1_polar).WriteArray(patch_band)
+                                                count_s1_polar += 1
+
+
+def get_geometry(raster):
+    """
+    Calculate geometry of a raster
+    @params:
+        raster   		  - Required  : dataset raster
+    """
+    transform = raster.GetGeoTransform()
+    pixelWidth = transform[1]
+    pixelHeight = transform[5]
+    cols = raster.RasterXSize
+    rows = raster.RasterYSize
+
+    xLeft = transform[0]
+    yTop = transform[3]
+    xRight = xLeft + cols * pixelWidth
+    yBottom = yTop - rows * pixelHeight
+
+    ring = ogr.Geometry(ogr.wkbLinearRing)
+    ring.AddPoint(xLeft, yTop)
+    ring.AddPoint(xLeft, yBottom)
+    ring.AddPoint(xRight, yTop)
+    ring.AddPoint(xRight, yBottom)
+    ring.AddPoint(xLeft, yTop)
+    rasterGeometry = ogr.Geometry(ogr.wkbPolygon)
+    rasterGeometry.AddGeometry(ring)
+
+    return rasterGeometry
+
+
+def check_overlap(path_raster_1, path_raster_2):
+    """
+    Checking overlap of two rasters
+    @params:
+        path_raster_1   		  - Required  : path to the first raster
+        path_raster_2   		  - Required  : path to the second raster
+    """
+    raster_1 = gdal.Open(path_raster_1)
+    raster_2 = ogr.Open(path_raster_2)
+
+    raster_1_geometry = get_geometry(raster_1)
+    raster_2_geometry = get_geometry(raster_2)
+
+    return raster_1_geometry.Intersect(raster_2_geometry)
 
 
 def main():
     cwd = os.getcwd()
     path_shapefile_sentinel = './inputs/S2_Tiling_GE_test.shp'
     field = 'Name'
-    directory_images = os.path.join(cwd, 'S2_img')
+    directory_images_s2 = os.path.join(cwd, 'S2_img')
+    directory_images_s1 = os.path.join(cwd, 'S1_img')
+    patch_size = 128
     directory_ground_reference_raster = os.path.join(cwd, 'ground_reference_raster')
     directory_dataset = os.path.join(cwd, 'dataset')
     path_shp_ground_reference = './inputs/merge_OCSGE.shp'
-    attribute_shp_ground_reference = 'cod_n4'
+    attribute_shp_ground_reference = 'cod_n3'
 
-    #Read all S2-Tiles and put them in a, array
+    # Read all S2-Tiles and put them in a, array
     tiles_list = get_sentinel_tiles(path_shapefile_sentinel, field)
 
-    #Download Sentinel for each tile
-    start_date = '2020-06-15'
-    end_date = '2020-06-30'
+    # Download Sentinel for each tile
+    start_date = '2020-06-21'
+    end_date = '2020-06-24'
 
     print(datetime.now().isoformat() + ' Downloading S2 images from ' + str(
         start_date) + ' to ' + str(end_date) + ' for each S2 tiles.')
     for tile in tiles_list:
         print('')
-        #download_sentinel2(tile, start_date, end_date)
+        # download_sentinel2(tile, start_date, end_date)
     print(datetime.now().isoformat() + ' Successfully downloaded S2 images from ' + str(
         start_date) + ' to ' + str(end_date) + '.')
 
@@ -258,7 +452,7 @@ def main():
     for file in os.listdir(cwd):
         file_path = os.path.join(cwd, file)
         if zipfile.is_zipfile(file_path):
-            unzip(file_path, directory_images)
+            unzip(file_path, directory_images_s2)
     print(datetime.now().isoformat() + ' Successfully unzipped S2 images.')
 
     print(datetime.now().isoformat() + ' Rasterizing ground reference for each S2 tiles.')
@@ -266,32 +460,35 @@ def main():
         os.mkdir(directory_ground_reference_raster)
 
     for tile in tiles_list:
-        for img in os.listdir(directory_images):
+        for img in os.listdir(directory_images_s2):
             if tile in img:
-                path_band_ref = os.path.join(directory_images, img, img + '_SRE_B3.tif')
+                path_band_ref = os.path.join(directory_images_s2, img, img + '_SRE_B3.tif')
                 output_filename = os.path.join(cwd, directory_ground_reference_raster, tile + '_ground_reference.tif')
-                #rasterize_ground_ref(path_band_ref, path_shp_ground_reference, attribute_shp_ground_reference, output_filename)
+                # rasterize_ground_ref(path_band_ref, path_shp_ground_reference, attribute_shp_ground_reference,
+                # output_filename)
     print(datetime.now().isoformat() + ' Successfully rasterized ground reference for each S2 tiles.')
 
-    print(datetime.now().isoformat() + ' Downloading and calibrating Sentinel-1 data.')
+    '''print(datetime.now().isoformat() + ' Downloading and calibrating Sentinel-1 data.')
     download_sentinel1(tiles_list, directory_images, step=8)
     print(datetime.now().isoformat() + ' Successfully downloaded and calibrated Sentinel-1 data.')
 
     print(datetime.now().isoformat() + ' Checking Sentinel-1 data.')
     s1_output = './S1_img'
     json = check_satellite_data(tiles_list, directory_images, s1_output)
-    print(datetime.now().isoformat() + ' Successfully checked Sentinel-1 data.')
+    print(datetime.now().isoformat() + ' Successfully checked Sentinel-1 data.')'''
 
     print(datetime.now().isoformat() + ' Calculating patches for each tile.')
     if not os.path.exists(directory_dataset):
         os.mkdir(directory_dataset)
 
     for tile in tiles_list:
-        calculate_patches_tile(tile, directory_ground_reference_raster, directory_images, directory_dataset)
+        calculate_patches_tile(tile, directory_ground_reference_raster, directory_images_s2,
+                               directory_images_s1,
+                               directory_dataset, patch_size, method=1)
     print(datetime.now().isoformat() + ' Successfully calculated patches for each tile.')
 
     print(datetime.now().isoformat() + ' Checking overlapped patches.')
-
+    # TODO : checker l'overlap entre les tuiles adjacentes
     print(datetime.now().isoformat() + ' Successfully checked and deleted overlapped patches')
 
 
