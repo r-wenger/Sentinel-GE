@@ -29,7 +29,7 @@ def rasterize_ground_ref(path_raster_reference, path_shapefile_to_raster, attrib
     dataset_shapefile = ogr.Open(path_shapefile_to_raster)
     layer_shapefile = dataset_shapefile.GetLayer()
 
-    nodata_value = 255
+    nodata_value = 0
     # source_layer = data.GetLayer()
 
     x_min = geo_transform[0]
@@ -423,6 +423,9 @@ def check_overlap(path_raster_1, path_raster_2):
 
 def main():
     cwd = os.getcwd()
+    #TODO: Regroupement des classes
+    urban_regroup_classes = '11111:1 11112:1 11113:1 11121:1 11122:1 11123:1 11211:2 11212:2 11213:2 11221:2 11222:2 11223:2 11231:2 11232:2 11233:2 11241:2 11242:2 11243:2 11301:2 11302:2 11303:2 11401:3 11402:3 11403:3 12111:3 12112:3 12113:3 12121:3 12122:3 12123:3 12131:3 12132:3 12133:4 13141:3 13142:3 13123:4 12151:3 12152:3 12153:4 12201:3 12202:3 12203:4 13111:3 13112:3 13113:3 13121:3 13122:3 13123:3 13131:3 13132:3 13133:3 13141:3 13142:3 13143:4 13201:1 13202:3 13203:3 13301:2 13302:2 13303:2 13401:3 13402:3 13403:3 14111:3 14112:3 14113:5 14201:3 14202:3 14203:4 14301:3 14302:3 14303:3 15101:3 15102:3 15103:4 16101:3 16101:3 16103:3 17101:1 17102:1 17103:1 12141:4 12142:4 12143:3 14121:-99 14122:-99 14123:-99'
+    natural_regroup_classes = ''
     path_shapefile_sentinel = './inputs/S2_Tiling_GE_test.shp'
     field = 'Name'
     directory_images_s2 = os.path.join(cwd, 'S2_img')
@@ -431,20 +434,22 @@ def main():
     directory_ground_reference_raster = os.path.join(cwd, 'ground_reference_raster')
     directory_dataset = os.path.join(cwd, 'dataset')
     path_shp_ground_reference = './inputs/merge_OCSGE.shp'
-    attribute_shp_ground_reference = 'cod_n3'
+    attribute_shp_ground_reference_urban = 'cod_n5'
+    attribute_shp_ground_reference_natural = 'cod_n4'
 
     # Read all S2-Tiles and put them in a, array
-    tiles_list = get_sentinel_tiles(path_shapefile_sentinel, field)
+    #tiles_list = get_sentinel_tiles(path_shapefile_sentinel, field)
+    tiles_list = ['31UGP', '32ULU', '32ULV', '32UMU', '32UMV']
 
     # Download Sentinel for each tile
-    start_date = '2020-06-21'
-    end_date = '2020-06-24'
+    start_date = '2020-02-01'
+    end_date = '2020-09-30'
 
     print(datetime.now().isoformat() + ' Downloading S2 images from ' + str(
         start_date) + ' to ' + str(end_date) + ' for each S2 tiles.')
     for tile in tiles_list:
         print('')
-        # download_sentinel2(tile, start_date, end_date)
+        download_sentinel2(tile, start_date, end_date)
     print(datetime.now().isoformat() + ' Successfully downloaded S2 images from ' + str(
         start_date) + ' to ' + str(end_date) + '.')
 
@@ -463,9 +468,20 @@ def main():
         for img in os.listdir(directory_images_s2):
             if tile in img:
                 path_band_ref = os.path.join(directory_images_s2, img, img + '_SRE_B3.tif')
-                output_filename = os.path.join(cwd, directory_ground_reference_raster, tile + '_ground_reference.tif')
-                # rasterize_ground_ref(path_band_ref, path_shp_ground_reference, attribute_shp_ground_reference,
-                # output_filename)
+                output_filename_urban = os.path.join(cwd, directory_ground_reference_raster, tile + 'urban_ground_reference.tif')
+                output_filename_natural = os.path.join(cwd, directory_ground_reference_raster,
+                                                     tile + 'natural_ground_reference.tif')
+                output_filename_merge = os.path.join(cwd, directory_ground_reference_raster,
+                                                       tile + '_ground_reference.tif')
+
+                rasterize_ground_ref(path_band_ref, path_shp_ground_reference, attribute_shp_ground_reference_urban,
+                 output_filename_urban)
+                rasterize_ground_ref(path_band_ref, path_shp_ground_reference, attribute_shp_ground_reference_urban,
+                                     output_filename_natural)
+
+
+
+
     print(datetime.now().isoformat() + ' Successfully rasterized ground reference for each S2 tiles.')
 
     '''print(datetime.now().isoformat() + ' Downloading and calibrating Sentinel-1 data.')
@@ -488,7 +504,8 @@ def main():
     print(datetime.now().isoformat() + ' Successfully calculated patches for each tile.')
 
     print(datetime.now().isoformat() + ' Checking overlapped patches.')
-    # TODO : checker l'overlap entre les tuiles adjacentes
+    # TODO : checker l'overlap entre les tuiles adjacentes (entre tous les patchs S2 puis supprimer les patchs S1
+    #  correspondants)
     print(datetime.now().isoformat() + ' Successfully checked and deleted overlapped patches')
 
 
