@@ -1,9 +1,12 @@
 import osgeo.gdal as gdal
 import osgeo.ogr as ogr
+import osgeo.osr as osr
 from osgeo.gdalconst import *
 
 # Numpy Import
 import numpy as np
+import numpy.ma as ma
+from skimage import morphology
 
 # Others imports
 import os
@@ -29,7 +32,7 @@ def rasterize_ground_ref(path_raster_reference, path_shapefile_to_raster, attrib
     dataset_shapefile = ogr.Open(path_shapefile_to_raster)
     layer_shapefile = dataset_shapefile.GetLayer()
 
-    nodata_value = 0
+    nodata_value = 255
     # source_layer = data.GetLayer()
 
     x_min = geo_transform[0]
@@ -51,6 +54,80 @@ def rasterize_ground_ref(path_raster_reference, path_shapefile_to_raster, attrib
     gdal.RasterizeLayer(target_ds, [1], layer_shapefile, options=["ATTRIBUTE=" + str(attribute_shapefile)])
 
     target_ds = None
+
+
+def change_projection(path_raster_reference, path_shapefile_to_raster, attribute_shapefile_n5, attribute_shapefile_n4, output_filename,
+                      attribute_values_n5=[], attribute_values_n4=[]):
+    """
+    Changing shapefile projection to match with raster.
+    @params:
+        path_raster_reference   	- Required  : raster or satellite image as reference
+        path_shapefile_to_raster   	- Required  : shapefile to rasterize
+        attribute_shapefile   		- Required  : attribute to rasterize (name of shapefile column)
+        output_filename   			- Required  : output file rasterized
+        attribute_values   			- Required  : list of attributes to rasterize
+    """
+    if (len(attribute_values_n5) == 0):
+        raise Exception('Error : length of attributes array is 0')
+
+    tif = gdal.Open(path_raster_reference)
+    driver = ogr.GetDriverByName("ESRI Shapefile")
+
+    dataSource = driver.Open(path_shapefile_to_raster, 0)
+
+    layer = dataSource.GetLayer()
+
+    sourceprj = layer.GetSpatialRef()
+    targetprj = osr.SpatialReference(wkt=tif.GetProjection())
+    transform = osr.CoordinateTransformation(sourceprj, targetprj)
+
+    to_fill = ogr.GetDriverByName("ESRI Shapefile")
+    ds = to_fill.CreateDataSource(output_filename)
+    outlayer = ds.CreateLayer('', targetprj, ogr.wkbPolygon)
+    outlayer.CreateField(ogr.FieldDefn('ID', ogr.OFTInteger))
+    outlayer.CreateField(ogr.FieldDefn(attribute_shapefile_n5, ogr.OFTInteger))
+
+    i = 0
+
+    for feature in layer:
+        _val = None
+
+        if (feature.GetField(attribute_shapefile_n5) is not None) and (feature.GetField(attribute_shapefile_n5) != 0) :
+            if int(feature.GetField(attribute_shapefile_n5)) in attribute_values_n5:
+                _val = feature.GetField(attribute_shapefile_n5)
+            else:
+                _val = 0
+            transformed = feature.GetGeometryRef()
+            transformed.Transform(transform)
+
+            geom = ogr.CreateGeometryFromWkb(transformed.ExportToWkb())
+            defn = outlayer.GetLayerDefn()
+            feat = ogr.Feature(defn)
+            feat.SetField('ID', i)
+            feat.SetField(attribute_shapefile_n5, _val)
+            feat.SetGeometry(geom)
+            outlayer.CreateFeature(feat)
+            i += 1
+            feat = None
+        else:
+            if int(feature.GetField(attribute_shapefile_n4)) in attribute_values_n4:
+                _val = feature.GetField(attribute_shapefile_n4)
+            else:
+                _val = 0
+            transformed = feature.GetGeometryRef()
+            transformed.Transform(transform)
+
+            geom = ogr.CreateGeometryFromWkb(transformed.ExportToWkb())
+            defn = outlayer.GetLayerDefn()
+            feat = ogr.Feature(defn)
+            feat.SetField('ID', i)
+            feat.SetField(attribute_shapefile_n5, _val)
+            feat.SetGeometry(geom)
+            outlayer.CreateFeature(feat)
+            i += 1
+            feat = None
+
+    ds = None
 
 
 def get_sentinel_tiles(path_shapefile_sentinel, field):
@@ -213,6 +290,46 @@ def unzip(path_to_zip_file, directory_to_extract_to):
     print(datetime.now().isoformat() + 'Successfully extracted ' + str(path_to_zip_file))
 
 
+def merge_classes(input_raster, dic_classes, output_filename):
+    """
+    Merging some classes togerther to get a new typology
+    @params:
+        input_raster   	- Required  : raster to merge
+        dic_classes   	- Required  : dictionnary containing original classes as keys, and new typologies as value
+        output_filename - Required  : output path to create the new raster
+    """
+    ds_raster = gdal.Open(input_raster, GA_ReadOnly)
+    array_raster = ds_raster.GetRasterBand(1).ReadAsArray()
+    tab_return = None
+
+    for key in dic_classes:
+        if tab_return is None:
+            tab_return = np.where(array_raster == key, dic_classes[key], 0)
+        else:
+            tab_return += np.where(array_raster == key, dic_classes[key], 0)
+
+    if -99 in tab_return:
+        tab_return = ma.masked_array(tab_return, tab_return == -99)
+        for shift in (-3, 3):
+            for axis in (0, 1):
+                a_shifted = np.roll(tab_return, shift=shift, axis=axis)
+                idx = ~a_shifted.mask * tab_return.mask
+                tab_return[idx] = a_shifted[idx]
+
+    se_disk = morphology.disk(3)
+    se_rectangle = morphology.rectangle(3, 3)
+    tab_return = morphology.opening(tab_return, se_disk)
+    tab_return = morphology.opening(tab_return, se_rectangle)
+
+    driver = gdal.GetDriverByName("GTiff")
+    dst_ds = driver.Create(output_filename, ds_raster.RasterXSize, ds_raster.RasterYSize, 1, gdal.GDT_Byte)
+    dst_ds.SetProjection(ds_raster.GetProjection())
+    geotransform = ds_raster.GetGeoTransform()
+    dst_ds.SetGeoTransform(geotransform)
+    dst_ds.GetRasterBand(1).WriteArray(tab_return)
+    dst_ds = None
+
+
 def get_date_from_image_path(name, s1=False):
     """
     Return date from Sentinel-2 folder name or Sentinel-1 pretreated name.
@@ -276,6 +393,32 @@ def get_s1_dates(path):
     return res
 
 
+def create_folders_dataset(path_directory_dataset):
+    if os.path.exists(os.path.join(path_directory_dataset, 's1')):
+        os.remove(os.path.join(path_directory_dataset, 's1'))
+        os.mkdir(os.path.join(path_directory_dataset, 's1'))
+    else:
+        os.mkdir(os.path.join(path_directory_dataset, 's1'))
+
+    if os.path.exists(os.path.join(path_directory_dataset, 's2')):
+        os.remove(os.path.join(path_directory_dataset, 's2'))
+        os.mkdir(os.path.join(path_directory_dataset, 's2'))
+    else:
+        os.mkdir(os.path.join(path_directory_dataset, 's2'))
+
+    if os.path.exists(os.path.join(path_directory_dataset, 'ground_reference')):
+        os.remove(os.path.join(path_directory_dataset, 'ground_reference'))
+        os.mkdir(os.path.join(path_directory_dataset, 'ground_reference'))
+    else:
+        os.mkdir(os.path.join(path_directory_dataset, 'ground_reference'))
+
+    if os.path.exists(os.path.join(path_directory_dataset, 'labels')):
+        os.remove(os.path.join(path_directory_dataset, 'labels'))
+        os.mkdir(os.path.join(path_directory_dataset, 'labels'))
+    else:
+        os.mkdir(os.path.join(path_directory_dataset, 'labels'))
+
+
 # Nomenclature des patchs : tile_sensor_date_topX_topY_
 def calculate_patches_tile(tile, directory_ground_reference, directory_sat_images_s2, directory_sat_images_s1,
                            directory_dataset, patch_size, method=1):
@@ -304,7 +447,7 @@ def calculate_patches_tile(tile, directory_ground_reference, directory_sat_image
 
             gr_patch = gr_raster[y:y + patch_size, x:x + patch_size]
 
-            if 255 not in gr_patch:
+            if 0 not in gr_patch:
                 if method == 2:
                     step = patch_size
 
@@ -317,24 +460,22 @@ def calculate_patches_tile(tile, directory_ground_reference, directory_sat_image
                 for img_dir in os.listdir(directory_sat_images_s2):
                     if tile in img_dir:
                         date_s2 = get_date_from_image_path(img_dir)
-                        output_patch_name_s2 = os.path.join(directory_dataset, str(tile) + '_' + str(date_s2) + '_S2_' +
+                        output_patch_name_s2 = os.path.join(directory_dataset, 's2', str(tile) + '_' + str(date_s2) + '_S2_' +
                                                             str(x) + '_' + str(y) + '.tif')
-                        output_patch_name_gr = os.path.join(directory_dataset, str(tile) + '_' + str(date_s2) + '_GR_' +
+                        output_patch_name_gr = os.path.join(directory_dataset, 'ground_reference', str(tile) + '_GR_' +
                                                             str(x) + '_' + str(y) + '.tif')
 
                         dst_ds_img_s2 = driver.Create(output_patch_name_s2, patch_size, patch_size, len(bands_S2),
                                                       gdal.GDT_Float32, options=["COMPRESS=LZW"])
-
-                        dst_ds_mask = driver.Create(output_patch_name_gr, patch_size, patch_size, 1, gdal.GDT_UInt16,
-                                                    options=["COMPRESS=LZW"])
-
                         dst_ds_img_s2.SetProjection(ds_gr_raster.GetProjection())
-                        dst_ds_mask.SetProjection(ds_gr_raster.GetProjection())
-
                         dst_ds_img_s2.SetGeoTransform(new_geotrans)
-                        dst_ds_mask.SetGeoTransform(new_geotrans)
 
-                        dst_ds_mask.GetRasterBand(1).WriteArray(gr_patch)
+                        if not os.path.exists(output_patch_name_gr):
+                            dst_ds_mask = driver.Create(output_patch_name_gr, patch_size, patch_size, 1, gdal.GDT_UInt16,
+                                                    options=["COMPRESS=LZW"])
+                            dst_ds_mask.SetProjection(ds_gr_raster.GetProjection())
+                            dst_ds_mask.SetGeoTransform(new_geotrans)
+                            dst_ds_mask.GetRasterBand(1).WriteArray(gr_patch)
 
                         count_s2_bands = 1
                         for band_name in bands_S2:
@@ -355,7 +496,7 @@ def calculate_patches_tile(tile, directory_ground_reference, directory_sat_image
                                 for date in complete_dates_s1:
                                     count_s1_polar = 1
                                     date_s1 = str(year) + str(month) + str(date[-2:])
-                                    output_patch_name_s1 = os.path.join(directory_dataset,
+                                    output_patch_name_s1 = os.path.join(directory_dataset, 's1',
                                                                         str(tile) + '_' + str(date_s1) + '_S1_' +
                                                                         str(x) + '_' + str(y) + '.tif')
                                     dst_ds_img_s1 = driver.Create(output_patch_name_s1, patch_size, patch_size,
@@ -405,6 +546,54 @@ def get_geometry(raster):
     return rasterGeometry
 
 
+def extract_dic(tab_classes):
+    """
+    Transform an array containing classes to a dictionnary
+    @params:
+        tab_classes   		  - Required  : array containing classes definition
+    """
+    dic_res = {}
+
+    for e in tab_classes:
+        _tmp = e.split(':')
+        dic_res[int(_tmp[0])] = int(_tmp[1])
+
+    return dic_res
+
+
+def computing_roads(output_folder, shapefile_roads, roads_pix_value, output_merging_tif, output_name_with_roads):
+    output_filename_reproj = os.path.join(output_folder, 'roads_reproj.shp')
+    change_projection(output_merging_tif, shapefile_roads, 'VAL', None, output_filename_reproj, [99], None)
+
+    output_filename_rasterize = os.path.join(output_folder, 'roads_reproj.tif')
+    rasterize_ground_ref(output_merging_tif, output_filename_reproj, 'VAL', output_filename_rasterize)
+
+    dataset_roads = gdal.Open(output_filename_rasterize, GA_ReadOnly)
+    dataset_gt = gdal.Open(output_merging_tif, GA_ReadOnly)
+
+    band_roads = dataset_roads.GetRasterBand(1).ReadAsArray()
+    band_gt = dataset_gt.GetRasterBand(1).ReadAsArray()
+
+    band_roads[band_roads == 255] = 0
+    _tmp = band_gt + band_roads
+
+    _tmp[_tmp >= 90] = roads_pix_value
+    _tmp[_tmp == 25] = 5
+
+    shape = _tmp.shape
+
+    output = output_name_with_roads
+
+    geo_transform = dataset_gt.GetGeoTransform()
+    driver = gdal.GetDriverByName("GTiff")
+    dst_ds = driver.Create(output, shape[1], shape[0], 1, gdal.GDT_UInt16)
+    dst_ds.SetProjection(dataset_gt.GetProjection())
+    dst_ds.SetGeoTransform(geo_transform)
+    dst_ds.GetRasterBand(1).WriteArray(_tmp)
+
+    return output
+
+
 def check_overlap(path_raster_1, path_raster_2):
     """
     Checking overlap of two rasters
@@ -421,31 +610,168 @@ def check_overlap(path_raster_1, path_raster_2):
     return raster_1_geometry.Intersect(raster_2_geometry)
 
 
+def merge_two_dicts(x, y):
+    """
+    Merging two dictionnaries
+    @params:
+        x   		  - Required  : first dictionnary
+        z   		  - Required  : second dictionnary
+    """
+    z = x.copy()
+    z.update(y)
+    return z
+
+
+def extract_info_patches(patch_name, is_gr=False):
+    """
+    Extract informations from patch name.
+    @params:
+        patch_name   	- Required  : filename of the patch
+        is_gr           - Required  : boolean to tell if the filename is ground reference or not
+    """
+    split = patch_name.split('_')
+
+    if is_gr:
+        tile = split[0]
+        tile_x = split[2]
+        tile_y = split[3]
+        output = (tile, tile_x, tile_y)
+    else:
+        tile = split[0]
+        date_img = split[1]
+        sat = split[2]
+        tile_x = split[3]
+        tile_y = split[4]
+        output = (tile, date_img, sat, tile_x, tile_y)
+
+    return output
+
+
+def get_corresponding_sat(path_folder, tile_x, tile_y):
+    """
+    Extract every file in the folder corresponding to the coordinates and concatenate them in one single string.
+    @params:
+        path_folder   	- Required  : filename of the patch
+        tile_x          - Required  : boolean to tell if the filename is ground reference or not
+        tile_y          - Required  : boolean to tell if the filename is ground reference or not
+    """
+    output = None
+
+    for file in os.listdir(path_folder):
+        string = tile_x + '_' + tile_y
+        if string in file:
+            if output is None:
+                output = file
+            else:
+                output += ';' + file
+
+    return output
+
+
+def get_projection_patch(path_patch):
+    """
+    Get the projection (WKT) of a patch.
+    @params:
+        path_patch   	- Required  : path to the patch
+    """
+    dataset = gdal.Open(path_patch, GA_ReadOnly)
+    proj = dataset.GetProjection()
+
+    return proj
+
+
+def list_to_string(list, sep=';'):
+    """
+    Convert a list to string using a separator between each element.
+    @params:
+        list   	- Required  : list to convert
+        sep     - Required  : separator to put between each element
+    """
+    res = None
+
+    for e in list:
+        if res is None:
+            res = str(e)
+        else:
+            res += sep + str(e)
+
+    return res
+
+
+def extract_classes_gr(path_gr_patch):
+    """
+    Extract classes in ground reference patch.
+    @params:
+        path_gr_patch   	- Required  : filename of the patch
+    """
+    dataset = gdal.Open(path_gr_patch, GA_ReadOnly)
+    array = dataset.GetRasterBand(1).ReadAsArray()
+
+    unique, counts = np.unique(array, return_counts=True)
+
+    return dict(zip(unique, counts))
+
+
+def create_json_labels(path_dataset):
+    """
+    Construct JSON file to generate labels for scene classification.
+    @params:
+        path_ground_reference   	- Required  : path to ground reference folder
+        path_output_json            - Required  : path to the json directory
+    """
+    for file in os.listdir(os.path.join(path_dataset, 'ground_reference')):
+        data = {}
+        patch_infos = extract_info_patches(os.path.basename(file), is_gr=True)
+        data['corresponding_s2'] = get_corresponding_sat(os.path.join(path_dataset, 's2'), patch_infos[1],
+                                                         patch_infos[2])
+        data['corresponding_s1'] = get_corresponding_sat(os.path.join(path_dataset, 's1'), patch_infos[1],
+                                                         patch_infos[2])
+        data['projection'] = get_projection_patch(os.path.join(path_dataset, 'ground_reference', file))
+        data['labels'] = list_to_string(extract_classes_gr(os.path.join(path_dataset, 'ground_reference', file)).keys())
+
+        json_name = patch_infos[0] + '_' + patch_infos[1] + '_' + patch_infos[2] + '.json'
+
+        if os.path.exists(os.path.join(path_dataset, 'labels', json_name)):
+            os.remove(os.path.join(path_dataset, 'labels', json_name))
+
+        with open(os.path.join(path_dataset, 'labels', json_name), 'w') as file:
+            json.dump(data, file)
+
+
+def calculate_stats_dataset(path_dataset):
+
+    return 0
+
+
 def main():
     cwd = os.getcwd()
-    #TODO: Regroupement des classes
-    urban_regroup_classes = '11111:1 11112:1 11113:1 11121:1 11122:1 11123:1 11211:2 11212:2 11213:2 11221:2 11222:2 11223:2 11231:2 11232:2 11233:2 11241:2 11242:2 11243:2 11301:2 11302:2 11303:2 11401:3 11402:3 11403:3 12111:3 12112:3 12113:3 12121:3 12122:3 12123:3 12131:3 12132:3 12133:4 13141:3 13142:3 13123:4 12151:3 12152:3 12153:4 12201:3 12202:3 12203:4 13111:3 13112:3 13113:3 13121:3 13122:3 13123:3 13131:3 13132:3 13133:3 13141:3 13142:3 13143:4 13201:1 13202:3 13203:3 13301:2 13302:2 13303:2 13401:3 13402:3 13403:3 14111:3 14112:3 14113:5 14201:3 14202:3 14203:4 14301:3 14302:3 14303:3 15101:3 15102:3 15103:4 16101:3 16101:3 16103:3 17101:1 17102:1 17103:1 12141:4 12142:4 12143:3 14121:-99 14122:-99 14123:-99'
-    natural_regroup_classes = ''
+    # TODO: Regroupement des classes
+    urban_regroup_classes = '11111:1 11112:1 11113:1 11121:1 11122:1 11123:1 11211:2 11212:2 11213:2 11221:2 11222:2 11223:2 11231:2 11232:2 11233:2 11241:2 11242:2 11243:2 11301:2 11302:2 11303:2 11401:3 11402:3 11403:3 12111:3 12112:3 12113:3 12121:3 12122:3 12123:3 12131:3 12132:3 12133:4 13141:3 13142:3 13123:4 12151:3 12152:3 12153:4 12201:3 12202:3 12203:4 13111:3 13112:3 13113:3 13121:3 13122:3 13123:3 13131:3 13132:3 13133:3 13141:3 13142:3 13143:4 13201:1 13202:3 13203:3 13301:2 13302:2 13303:2 13401:3 13402:3 13403:3 14111:3 14112:3 14113:5 14201:3 14202:3 14203:4 14301:3 14302:3 14303:3 15101:3 15102:3 15103:4 16101:3 16102:3 16103:3 17101:1 17102:1 17103:1 12141:4 12142:4 12143:3 14131:5 14132:5 14133:5 14121:-99 14122:-99 14123:-99'
+    natural_regroup_classes = '2110:6 2120:6 2210:7 2221:8 2222:8 2223:8 2310:9 2320:10 3110:11 3120:11 3130:11 3140:11 3150:11 3210:12 3220:12 3230:12 3310:13 3320:13 3340:13 4110:14 4120:14 5110:15 5120:15 5130:15'
     path_shapefile_sentinel = './inputs/S2_Tiling_GE_test.shp'
     field = 'Name'
     directory_images_s2 = os.path.join(cwd, 'S2_img')
     directory_images_s1 = os.path.join(cwd, 'S1_img')
-    patch_size = 128
+    shapefile_roads = './inputs/routes_finales_GE.shp'
+    patch_size = 256
     directory_ground_reference_raster = os.path.join(cwd, 'ground_reference_raster')
+    directory_tmp = os.path.join(cwd, 'tmp')
     directory_dataset = os.path.join(cwd, 'dataset')
-    path_shp_ground_reference = './inputs/merge_OCSGE.shp'
+    path_shp_ground_reference = './inputs/merge_grand_est.shp'
     attribute_shp_ground_reference_urban = 'cod_n5'
     attribute_shp_ground_reference_natural = 'cod_n4'
 
     # Read all S2-Tiles and put them in a, array
-    #tiles_list = get_sentinel_tiles(path_shapefile_sentinel, field)
+    # tiles_list = get_sentinel_tiles(path_shapefile_sentinel, field)
     tiles_list = ['31UGP', '32ULU', '32ULV', '32UMU', '32UMV']
+    #tiles_list = ['32ULU']
 
     # Download Sentinel for each tile
     start_date = '2020-02-01'
+    #end_date = '2020-02-10'
     end_date = '2020-09-30'
 
-    print(datetime.now().isoformat() + ' Downloading S2 images from ' + str(
+    ''''print(datetime.now().isoformat() + ' Downloading S2 images from ' + str(
         start_date) + ' to ' + str(end_date) + ' for each S2 tiles.')
     for tile in tiles_list:
         print('')
@@ -464,27 +790,63 @@ def main():
     if not os.path.exists(directory_ground_reference_raster):
         os.mkdir(directory_ground_reference_raster)
 
+    if not os.path.exists(directory_tmp):
+        os.mkdir(directory_tmp)
+
+    dic_classes_urban = extract_dic(urban_regroup_classes.split(' '))
+    dic_classes_natural = extract_dic(natural_regroup_classes.split(' '))
+
+    attributes_merge = []
+    for key in dic_classes_urban:
+        if dic_classes_urban[key] not in attributes_merge:
+            attributes_merge.append(dic_classes_urban[key])
+
+    if -99 in attributes_merge:
+        attributes_merge.remove(-99)
+
+    all_classes_urban = []
+    for key in dic_classes_urban:
+        if key not in all_classes_urban:
+            all_classes_urban.append(key)
+
+    all_classes_natural = []
+    for key in dic_classes_natural:
+        if key not in all_classes_natural:
+            all_classes_natural.append(key)
+
     for tile in tiles_list:
         for img in os.listdir(directory_images_s2):
             if tile in img:
                 path_band_ref = os.path.join(directory_images_s2, img, img + '_SRE_B3.tif')
-                output_filename_urban = os.path.join(cwd, directory_ground_reference_raster, tile + 'urban_ground_reference.tif')
-                output_filename_natural = os.path.join(cwd, directory_ground_reference_raster,
-                                                     tile + 'natural_ground_reference.tif')
-                output_filename_merge = os.path.join(cwd, directory_ground_reference_raster,
-                                                       tile + '_ground_reference.tif')
+                output_filename_tmp = os.path.join(cwd, directory_tmp,
+                                                     tile + '_tmp.tif')
+                shapefile_to_raster_tmp = os.path.join(cwd, directory_tmp,
+                                                         path_shp_ground_reference.split('/')[2][:-4] + '_tmp.shp')
+                output_filename_merge_tmp = os.path.join(cwd, directory_tmp,
+                                                     tile + '_merge_tmp.tif')
+                output_filename_merge_final = os.path.join(cwd, directory_ground_reference_raster,
+                                                     tile + '_ground_reference.tif')
 
-                rasterize_ground_ref(path_band_ref, path_shp_ground_reference, attribute_shp_ground_reference_urban,
-                 output_filename_urban)
-                rasterize_ground_ref(path_band_ref, path_shp_ground_reference, attribute_shp_ground_reference_urban,
-                                     output_filename_natural)
+                # Changing ground refenre projection and reclassify
+                change_projection(path_band_ref, path_shp_ground_reference, attribute_shp_ground_reference_urban,
+                                  attribute_shp_ground_reference_natural, shapefile_to_raster_tmp, all_classes_urban, all_classes_natural)
 
+                # Rasterizing shapefile
+                rasterize_ground_ref(path_band_ref, shapefile_to_raster_tmp, attribute_shp_ground_reference_urban,
+                                     output_filename_tmp)
 
+                merge_classes(output_filename_tmp, merge_two_dicts(dic_classes_urban, dic_classes_natural), output_filename_merge_tmp)
 
+                #Adding roads on reference data
+                pixel_roads_value = 25
+                computing_roads(os.path.join(cwd, directory_tmp), shapefile_roads, pixel_roads_value,
+                                output_filename_merge_tmp, output_filename_merge_final)
+
+                break
 
     print(datetime.now().isoformat() + ' Successfully rasterized ground reference for each S2 tiles.')
 
-    '''print(datetime.now().isoformat() + ' Downloading and calibrating Sentinel-1 data.')
+    print(datetime.now().isoformat() + ' Downloading and calibrating Sentinel-1 data.')
     download_sentinel1(tiles_list, directory_images, step=8)
     print(datetime.now().isoformat() + ' Successfully downloaded and calibrated Sentinel-1 data.')
 
@@ -497,10 +859,13 @@ def main():
     if not os.path.exists(directory_dataset):
         os.mkdir(directory_dataset)
 
+    #create_folders_dataset(directory_dataset)
+
     for tile in tiles_list:
-        calculate_patches_tile(tile, directory_ground_reference_raster, directory_images_s2,
+        '''calculate_patches_tile(tile, directory_ground_reference_raster, directory_images_s2,
                                directory_images_s1,
-                               directory_dataset, patch_size, method=1)
+                               directory_dataset, patch_size, method=1)'''
+        create_json_labels(directory_dataset)
     print(datetime.now().isoformat() + ' Successfully calculated patches for each tile.')
 
     print(datetime.now().isoformat() + ' Checking overlapped patches.')
