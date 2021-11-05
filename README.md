@@ -5,3 +5,6 @@ We recommand you to use Anaconda or Miniconda in order to install multiple pytho
 
 ## Frequent errors or warnings
 - "ERROR 4: Unable to open EPSG support file gcs.csv.  Try setting the GDAL_DATA environment variable to point to the directory containing EPSG csv files." This error may occurs while using Rasterio. You just need to unset GDAL_DATA (Source : https://rasterio.readthedocs.io/en/latest/faq.html)
+
+## Notes
+- Automatic S1 download doesn't work. Prefer using s1tiling (https://s1-tiling.pages.orfeo-toolbox.org/s1tiling/latest/install.html)
