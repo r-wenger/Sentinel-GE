@@ -8,6 +8,7 @@ We recommand you to use Anaconda or Miniconda in order to install multiple pytho
 
 ## Notes
 - Automatic S1 download doesn't work. Prefer using [s1tiling](https://s1-tiling.pages.orfeo-toolbox.org/s1tiling/latest/install.html)
+- Reference data can be downloaded following this [link](https://www.geograndest.fr/portail/fr/projets/occupation-du-sol "link")
 
 ## TODO
 - Moving to Python3
