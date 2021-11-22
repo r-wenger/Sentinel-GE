@@ -11,6 +11,4 @@ We recommand you to use Anaconda or Miniconda in order to install multiple pytho
 - Reference data can be downloaded following this [link](https://www.geograndest.fr/portail/fr/projets/occupation-du-sol "link"). If you're working on multiple departments, you have to convert gpkg to shp and merge them if needed
 
 ## TODO
-- Moving to Python3
-- Automatic S1 processing using s1tiling docker
 - Accelerate treatments to create the dataset in less than 2 or 3 days
