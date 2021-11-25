@@ -12,3 +12,4 @@ We recommand you to use Anaconda or Miniconda in order to install multiple pytho
 
 ## TODO
 - Accelerate treatments to create the dataset in less than 2 or 3 days
+- Propose some function to extract every patch available per tile, in a time interval ...
